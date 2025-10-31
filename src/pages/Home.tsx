@@ -7,6 +7,7 @@ import ChatBot from "@/components/ChatBot";
 import ReviewsSection from "@/components/ReviewsSection";
 import DiscoveryFeed from "@/components/DiscoveryFeed";
 import DestinationStorySection from "@/components/DestinationStorySection";
+import MobileSearchBar from "@/components/MobileSearchBar";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +28,15 @@ const Home = () => {
   return (
     <div className="min-h-screen bg-background overflow-x-hidden w-full">
       <Header />
+
+      {/* Mobile Search Bar - Only visible on mobile devices */}
+      {/* Positioned at 80px (below header h-20) with padding and button h-14 (56px) */}
+      <div className="md:hidden fixed top-[80px] left-0 right-0 z-[9998] px-4 py-3 bg-white/95 backdrop-blur-md border-b border-border/50 shadow-sm">
+        <MobileSearchBar />
+      </div>
+
+      {/* Spacer for mobile search bar - Header (80px) + Search bar area (~80px) = ~160px total */}
+      <div className="md:hidden h-[160px]"></div>
 
       {/* Hero Section - Full Width, No Padding */}
       <HeroSection showSearch={false} />

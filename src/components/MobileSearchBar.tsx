@@ -39,24 +39,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  getCountryList,
-  getCityList,
+import { 
+  getAllCities,
+  searchCityByName,
+  CitySearchResult
 } from '@/services/hotelCodeApi';
 
 interface MobileSearchBarProps {
   className?: string;
-}
-
-interface Country {
-  Code: string;
-  Name: string;
-}
-
-interface City {
-  CityCode: string;
-  CityName: string;
-  CountryCode: string;
 }
 
 interface RoomGuests {
@@ -88,17 +78,13 @@ const MobileSearchBar: React.FC<MobileSearchBarProps> = ({ className = "" }) => 
     { adults: 2, children: 0, childrenAges: [] }
   ]);
   
-  // For API-based destination search
+  // For API-based destination search (using custom APIs like web view)
   const [searchInput, setSearchInput] = useState('');
   const [showResults, setShowResults] = useState(false);
-  const [countries, setCountries] = useState<Country[]>([]);
-  const [cities, setCities] = useState<City[]>([]);
-  const [filteredCountries, setFilteredCountries] = useState<Country[]>([]);
-  const [filteredCities, setFilteredCities] = useState<City[]>([]);
-  const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
-  const [isLoadingCountries, setIsLoadingCountries] = useState(false);
+  const [allCities, setAllCities] = useState<string[]>([]);
+  const [filteredCities, setFilteredCities] = useState<string[]>([]);
+  const [selectedCityData, setSelectedCityData] = useState<CitySearchResult | null>(null);
   const [isLoadingCities, setIsLoadingCities] = useState(false);
-  const [searchStep, setSearchStep] = useState<'country' | 'city'>('country');
   const destinationRef = useRef<HTMLDivElement>(null);
 
   // Room management functions
@@ -162,62 +148,153 @@ const MobileSearchBar: React.FC<MobileSearchBarProps> = ({ className = "" }) => 
   };
 
   const performSearch = () => {
+    // Validate that a city has been selected (same flow as web view)
+    if (!selectedCityData || !searchData.destination) {
+      console.error('❌ No city selected. Please select a destination from the suggestions.');
+      alert('Please select a destination from the suggestions.');
+      return;
+    }
+
+    // Validate dates are provided
+    if (!searchData.checkIn || !searchData.checkOut) {
+      console.error('❌ Dates required. Please select check-in and check-out dates.');
+      alert('Please select both check-in and check-out dates.');
+      return;
+    }
+
+    // Validate stay duration (max 30 days)
+    const checkInDate = new Date(searchData.checkIn);
+    const checkOutDate = new Date(searchData.checkOut);
+    const stayDuration = Math.ceil(
+      (checkOutDate.getTime() - checkInDate.getTime()) / (1000 * 60 * 60 * 24)
+    );
+
+    if (stayDuration > 30) {
+      console.error(`❌ Stay duration too long: ${stayDuration} days. Maximum is 30 days.`);
+      alert(`Stay duration cannot exceed 30 days. Your selected dates result in ${stayDuration} days. Please select a shorter period.`);
+      return;
+    }
+
+    if (stayDuration <= 0) {
+      console.error('❌ Invalid stay duration. Check-out must be after check-in.');
+      alert('Check-out date must be after check-in date.');
+      return;
+    }
+
+    console.log('✅ Validations passed. Preparing search...');
+    console.log('🏙️ Selected city data:', selectedCityData);
+    
     // Calculate totals
     const totalAdults = roomGuests.reduce((sum, room) => sum + room.adults, 0);
     const totalChildren = roomGuests.reduce((sum, room) => sum + room.children, 0);
     const allChildrenAges = roomGuests.flatMap(room => room.childrenAges);
     
+    // Build search parameters (same format as web view)
     const params = new URLSearchParams({
-      destination: searchData.destination || 'Riyadh',
+      destination: searchData.destination, // Format: "City Name, Country Name"
       guests: getTotalGuests().toString(),
       adults: totalAdults.toString(),
       children: totalChildren.toString(),
       rooms: roomGuests.length.toString(),
-      childrenAges: allChildrenAges.join(','),
-      roomGuests: JSON.stringify(roomGuests),
-      checkIn: searchData.checkIn || new Date().toISOString().split('T')[0],
-      checkOut: searchData.checkOut || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       nationality: nationality || 'AE',
       currency: currency || 'AED'
     });
 
+    // Add children ages if there are children (same as web view)
+    if (totalChildren > 0 && allChildrenAges.length > 0) {
+      params.set("childrenAges", allChildrenAges.join(","));
+    }
+
+    // Add room guest distribution if available (same as web view)
+    if (roomGuests.length > 0) {
+      params.set("roomGuests", JSON.stringify(roomGuests));
+    }
+
+    // Format dates in local timezone (YYYY-MM-DD) to avoid timezone shift issues (same as web view)
+    if (searchData.checkIn) {
+      // If checkIn is already in YYYY-MM-DD format, use it directly
+      // Otherwise parse and format it
+      let checkInDate: Date;
+      if (searchData.checkIn.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        // Already in correct format, parse it
+        const [year, month, day] = searchData.checkIn.split('-').map(Number);
+        checkInDate = new Date(year, month - 1, day);
+      } else {
+        checkInDate = new Date(searchData.checkIn);
+      }
+      const year = checkInDate.getFullYear();
+      const month = String(checkInDate.getMonth() + 1).padStart(2, '0');
+      const day = String(checkInDate.getDate()).padStart(2, '0');
+      params.set("checkIn", `${year}-${month}-${day}`);
+    } else {
+      // Default: 1 week from now
+      const defaultStartDate = new Date();
+      defaultStartDate.setDate(defaultStartDate.getDate() + 7);
+      const year = defaultStartDate.getFullYear();
+      const month = String(defaultStartDate.getMonth() + 1).padStart(2, '0');
+      const day = String(defaultStartDate.getDate()).padStart(2, '0');
+      params.set("checkIn", `${year}-${month}-${day}`);
+    }
+    
+    if (searchData.checkOut) {
+      // If checkOut is already in YYYY-MM-DD format, use it directly
+      // Otherwise parse and format it
+      let checkOutDate: Date;
+      if (searchData.checkOut.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        // Already in correct format, parse it
+        const [year, month, day] = searchData.checkOut.split('-').map(Number);
+        checkOutDate = new Date(year, month - 1, day);
+      } else {
+        checkOutDate = new Date(searchData.checkOut);
+      }
+      const year = checkOutDate.getFullYear();
+      const month = String(checkOutDate.getMonth() + 1).padStart(2, '0');
+      const day = String(checkOutDate.getDate()).padStart(2, '0');
+      params.set("checkOut", `${year}-${month}-${day}`);
+    } else {
+      // Default: 3 days after check-in
+      const checkInParam = params.get("checkIn");
+      if (checkInParam) {
+        const [year, month, day] = checkInParam.split('-').map(Number);
+        const defaultEndDate = new Date(year, month - 1, day);
+        defaultEndDate.setDate(defaultEndDate.getDate() + 3);
+        const outYear = defaultEndDate.getFullYear();
+        const outMonth = String(defaultEndDate.getMonth() + 1).padStart(2, '0');
+        const outDay = String(defaultEndDate.getDate()).padStart(2, '0');
+        params.set("checkOut", `${outYear}-${outMonth}-${outDay}`);
+      }
+    }
+
     console.log('🔍 Searching with preferences:', { nationality, currency });
+    console.log('📅 Search params:', Object.fromEntries(params.entries()));
+    console.log('🏙️ City codes will be fetched by SearchResults:', {
+      cityName: selectedCityData.city_name,
+      cityCode: selectedCityData.city_code,
+      countryCode: selectedCityData.country_code
+    });
+    console.log('🔄 Flow: SearchResults will use city name to fetch codes → get hotel codes → search API');
+    
+    // Navigate to search page - SearchResults will:
+    // 1. Extract city name from destination
+    // 2. Use searchCityByName() to get cityCode and countryCode
+    // 3. Use getHotelCodeList() with cityCode and countryCode to get hotel codes
+    // 4. Call search API with hotel codes
     navigate(`/search?${params.toString()}`);
     setIsOpen(false);
     setShowPreferencesDialog(false);
   };
 
-  // Load countries when destination field is focused
-  const loadCountries = async () => {
-    if (countries.length > 0) return; // Already loaded
+  // Load all cities from custom API (same as web view)
+  const loadAllCities = async () => {
+    if (allCities.length > 0) return; // Already loaded
     
-    setIsLoadingCountries(true);
-    try {
-      console.log('📍 Fetching countries...');
-      const response = await getCountryList();
-      if (response.CountryList && response.CountryList.length > 0) {
-        setCountries(response.CountryList);
-        setFilteredCountries(response.CountryList);
-        console.log('✅ Loaded', response.CountryList.length, 'countries');
-      }
-    } catch (error) {
-      console.error('❌ Error loading countries:', error);
-    } finally {
-      setIsLoadingCountries(false);
-    }
-  };
-  
-  // Load cities for selected country
-  const loadCities = async (countryCode: string) => {
     setIsLoadingCities(true);
     try {
-      console.log('🏙️ Fetching cities for country:', countryCode);
-      const response = await getCityList(countryCode);
-      if (response.CityList && response.CityList.length > 0) {
-        setCities(response.CityList);
-        setFilteredCities(response.CityList);
-        console.log('✅ Loaded', response.CityList.length, 'cities');
-      }
+      console.log('🏙️ Loading all cities from custom API...');
+      const cityNames = await getAllCities();
+      setAllCities(cityNames);
+      setFilteredCities(cityNames);
+      console.log('✅ Cities loaded:', cityNames.length);
     } catch (error) {
       console.error('❌ Error loading cities:', error);
     } finally {
@@ -225,28 +302,28 @@ const MobileSearchBar: React.FC<MobileSearchBarProps> = ({ className = "" }) => 
     }
   };
   
-  // Filter based on search input
+  // Filter cities based on search input (same as web view)
   useEffect(() => {
-    if (searchStep === 'country') {
-      if (searchInput.trim() === '') {
-        setFilteredCountries(countries);
-      } else {
-        const filtered = countries.filter(country =>
-          country.Name.toLowerCase().includes(searchInput.toLowerCase())
-        );
-        setFilteredCountries(filtered);
-      }
-    } else if (searchStep === 'city') {
-      if (searchInput.trim() === '') {
-        setFilteredCities(cities);
-      } else {
-        const filtered = cities.filter(city =>
-          city.CityName.toLowerCase().includes(searchInput.toLowerCase())
-        );
-        setFilteredCities(filtered);
-      }
+    if (searchInput.trim() === '') {
+      setFilteredCities(allCities);
+    } else {
+      const filtered = allCities.filter(cityName =>
+        cityName.toLowerCase().includes(searchInput.toLowerCase())
+      ).sort((a, b) => {
+        // Prioritize exact matches and matches that start with the search term
+        const aName = a.toLowerCase();
+        const bName = b.toLowerCase();
+        const searchTerm = searchInput.toLowerCase();
+        
+        if (aName.startsWith(searchTerm) && !bName.startsWith(searchTerm)) return -1;
+        if (!aName.startsWith(searchTerm) && bName.startsWith(searchTerm)) return 1;
+        if (aName.includes(searchTerm) && !bName.includes(searchTerm)) return -1;
+        if (!aName.includes(searchTerm) && bName.includes(searchTerm)) return 1;
+        return aName.localeCompare(bName);
+      }).slice(0, 50); // Limit to 50 cities for performance
+      setFilteredCities(filtered);
     }
-  }, [searchInput, searchStep, countries, cities]);
+  }, [searchInput, allCities]);
   
   // Click outside handler
   useEffect(() => {
@@ -260,40 +337,42 @@ const MobileSearchBar: React.FC<MobileSearchBarProps> = ({ className = "" }) => 
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   
-  // Handle country selection
-  const handleCountrySelect = async (country: Country) => {
-    console.log('🌍 Selected country:', country.Name);
-    setSelectedCountry(country);
-    setSearchInput('');
-    setSearchStep('city');
-    setShowResults(true);
-    await loadCities(country.Code);
-  };
-  
-  // Handle city selection
-  const handleCitySelect = (city: City) => {
-    console.log('🏙️ Selected city:', city.CityName);
-    const destination = `${city.CityName}, ${selectedCountry?.Name || ''}`;
-    setSearchData(prev => ({ ...prev, destination }));
-    setSearchInput(destination);
-    setShowResults(false);
-  };
-  
-  // Handle input focus
-  const handleDestinationFocus = () => {
-    setShowResults(true);
-    if (searchStep === 'country') {
-      loadCountries();
+  // Handle city selection (same as web view)
+  const handleCitySelect = async (cityName: string) => {
+    try {
+      console.log('🏙️ City selected:', cityName);
+      console.log('🔍 Fetching city details from custom API...');
+      
+      // Search for the city to get its codes
+      const cityData = await searchCityByName(cityName);
+      setSelectedCityData(cityData);
+      
+      const destinationValue = `${cityData.city_name}, ${cityData.country_name}`;
+      setSearchData(prev => ({ ...prev, destination: destinationValue }));
+      setSearchInput(destinationValue);
+      setShowResults(false);
+      
+      console.log('✅ City details:', {
+        city: cityData.city_name,
+        cityCode: cityData.city_code,
+        country: cityData.country_name,
+        countryCode: cityData.country_code
+      });
+    } catch (error) {
+      console.error('❌ Error fetching city details:', error);
+      // Fallback: just use the city name
+      setSearchData(prev => ({ ...prev, destination: cityName }));
+      setSearchInput(cityName);
+      setShowResults(false);
     }
   };
   
-  // Reset to country selection
-  const handleBackToCountries = () => {
-    setSearchStep('country');
-    setSelectedCountry(null);
-    setSearchInput('');
-    setCities([]);
-    setFilteredCities([]);
+  // Handle input focus - load cities when opened
+  const handleDestinationFocus = () => {
+    setShowResults(true);
+    if (allCities.length === 0) {
+      loadAllCities();
+    }
   };
 
   return (
@@ -335,34 +414,16 @@ const MobileSearchBar: React.FC<MobileSearchBarProps> = ({ className = "" }) => 
 
             {/* Search Form */}
             <div className="flex-1 overflow-y-auto p-4 space-y-6">
-              {/* Destination - Two-step API Search */}
+              {/* Destination - Single-step City Search (same as web view) */}
               <div className="space-y-2" ref={destinationRef}>
-                <div className="flex items-center justify-between">
                 <Label className="text-sm font-medium text-gray-700 flex items-center">
                   <MapPin className="h-4 w-4 mr-2" />
-                    {searchStep === 'country' ? 'Select Country' : 'Select City'}
+                  Search City
                 </Label>
-                  {searchStep === 'city' && selectedCountry && (
-                    <Button 
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleBackToCountries}
-                      className="text-xs text-primary hover:text-primary/80"
-                    >
-                      ← Back to countries
-                    </Button>
-                  )}
-                </div>
-                
-                {selectedCountry && searchStep === 'city' && (
-                  <div className="text-xs text-gray-600 bg-gray-50 p-2 rounded-lg">
-                    Selected: <span className="font-medium">{selectedCountry.Name}</span>
-                  </div>
-                )}
                 
                 <div className="relative">
                   <div className="relative">
-                    <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
                     <Input
                       type="text"
                       value={searchInput}
@@ -371,64 +432,45 @@ const MobileSearchBar: React.FC<MobileSearchBarProps> = ({ className = "" }) => 
                         setShowResults(true);
                       }}
                       onFocus={handleDestinationFocus}
-                      placeholder={searchStep === 'country' ? 'Search for a country...' : 'Search for a city...'}
+                      placeholder="Search cities..."
                       className="h-12 pl-10 pr-4 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
                     />
-                    {(isLoadingCountries || isLoadingCities) && (
+                    {isLoadingCities && (
                       <Loader2 className="absolute right-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-primary animate-spin" />
                     )}
                   </div>
                   
-                  {/* Country Results */}
-                  {showResults && searchStep === 'country' && !isLoadingCountries && filteredCountries.length > 0 && (
+                  {/* City Results */}
+                  {showResults && !isLoadingCities && filteredCities.length > 0 && (
                     <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                      {filteredCountries.map((country, index) => (
+                      {filteredCities.map((cityName, index) => (
                         <button
                           key={index}
-                          onClick={() => handleCountrySelect(country)}
-                          className="w-full flex items-center px-4 py-3 hover:bg-gray-50 transition-colors text-left border-b border-gray-100 last:border-0"
-                        >
-                          <span className="text-sm text-gray-900 font-medium">{country.Name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  
-                  {/* City Results */}
-                  {showResults && searchStep === 'city' && !isLoadingCities && filteredCities.length > 0 && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                      {filteredCities.map((city, index) => (
-                        <button
-                        key={index}
-                          onClick={() => handleCitySelect(city)}
+                          onClick={() => handleCitySelect(cityName)}
                           className="w-full flex items-center px-4 py-3 hover:bg-gray-50 transition-colors text-left border-b border-gray-100 last:border-0"
                         >
                           <MapPin className="h-4 w-4 mr-3 text-gray-400 flex-shrink-0" />
-                          <span className="text-sm text-gray-900">{city.CityName}</span>
+                          <span className="text-sm text-gray-900 font-medium">{cityName}</span>
                         </button>
                       ))}
                     </div>
                   )}
                   
                   {/* Loading State */}
-                  {(isLoadingCountries || isLoadingCities) && showResults && (
+                  {isLoadingCities && showResults && (
                     <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-4">
                       <div className="flex items-center justify-center space-x-2">
                         <Loader2 className="h-5 w-5 text-primary animate-spin" />
-                        <p className="text-sm text-gray-600">
-                          {searchStep === 'country' ? 'Loading countries...' : 'Loading cities...'}
-                        </p>
+                        <p className="text-sm text-gray-600">Loading cities...</p>
                       </div>
                     </div>
                   )}
                   
                   {/* No Results */}
-                  {showResults && !isLoadingCountries && !isLoadingCities && searchInput && 
-                   ((searchStep === 'country' && filteredCountries.length === 0) || 
-                    (searchStep === 'city' && filteredCities.length === 0)) && (
+                  {showResults && !isLoadingCities && searchInput && filteredCities.length === 0 && (
                     <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-4">
                       <p className="text-sm text-gray-500 text-center">
-                        No {searchStep === 'country' ? 'countries' : 'cities'} found
+                        {searchInput ? `No cities found matching "${searchInput}"` : 'Start typing to search cities'}
                       </p>
                     </div>
                   )}
